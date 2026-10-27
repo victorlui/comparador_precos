@@ -1,0 +1,10 @@
+.DS_Store
+**/.DS_Store
+
+# Editor and local workspace files
+.idea/
+.vscode/
+
+# Local environment files at repo root
+.env
+.env.local
