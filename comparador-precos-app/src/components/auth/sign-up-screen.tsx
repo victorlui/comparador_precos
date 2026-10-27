@@ -1,13 +1,11 @@
 import { getClerkErrorMessage } from "@/components/auth/auth-utils";
+import { validateSignUpIdentity } from "@/components/auth/sign-up-validation";
 import { apiClient } from "@/services/api/http-client";
 import { useAuth, useClerk, useSignUp } from "@clerk/expo";
-import { useSSO } from "@clerk/expo/experimental";
 import RenderHTML from "@native-html/render";
 import { Image } from "expo-image";
-import * as Linking from "expo-linking";
 import { StatusBar } from "expo-status-bar";
-import * as WebBrowser from "expo-web-browser";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -22,13 +20,10 @@ import {
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-WebBrowser.maybeCompleteAuthSession();
-
 type SignUpScreenProps = {
   onBack?: () => void;
 };
 
-type ProviderName = "google" | "apple";
 type LegalDocumentType = "terms_of_use" | "privacy_policy";
 
 type LegalDocument = {
@@ -66,19 +61,20 @@ function getNameParts(value: string) {
 export function SignUpScreen({ onBack }: SignUpScreenProps) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const redirectUrl = useMemo(() => Linking.createURL("/"), []);
   const { isLoaded } = useAuth();
   const clerk = useClerk();
-  const { startSSOFlow } = useSSO();
   const { signUp, fetchStatus } = useSignUp();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [socialLoading, setSocialLoading] = useState<ProviderName | null>(null);
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [formNotice, setFormNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [awaitingEmailVerification, setAwaitingEmailVerification] =
+    useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
   const [legalDocuments, setLegalDocuments] =
     useState<LegalDocumentsResponse | null>(null);
   const [legalLoading, setLegalLoading] = useState(true);
@@ -87,8 +83,8 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
     useState<LegalDocumentType | null>(null);
 
   const formBusy = submitting || fetchStatus === "fetching";
-  const formDisabled = !isLoaded || formBusy || socialLoading !== null;
-  const socialButtonsDisabled = !isLoaded || formBusy || socialLoading !== null;
+  const formDisabled = !isLoaded || formBusy;
+  const registrationFieldsDisabled = formDisabled || awaitingEmailVerification;
   const selectedLegalDocument = visibleLegalDocument
     ? (legalDocuments?.[visibleLegalDocument] ?? null)
     : null;
@@ -140,48 +136,68 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
     }
   };
 
-  const handleSSO = async (provider: ProviderName) => {
-    if (socialButtonsDisabled) {
-      return;
+  const finalizeCompletedSignUp = async () => {
+    const finalizeResult = await signUp.finalize();
+
+    if (finalizeResult.error) {
+      setFormNotice(null);
+      setFormError(getClerkErrorMessage(finalizeResult.error));
+      return false;
     }
 
-    if (!acceptTerms) {
-      setFormError("Aceite os termos para continuar com o cadastro.");
-      return;
+    const accountIsValid = await validateCreatedAccount();
+    if (!accountIsValid) {
+      return false;
     }
 
-    setFormError(null);
-    setSocialLoading(provider);
-
-    try {
-      const strategy = provider === "google" ? "oauth_google" : "oauth_apple";
-      const result = await startSSOFlow({
-        strategy,
-        redirectUrl,
-      });
-
-      if (result.signIn && !result.signIn.isTransferable) {
-        await clerk.signOut();
-        setFormError(
-          `Ja existe uma conta com ${provider === "google" ? "Google" : "Apple"}. Entre pela tela de login.`,
-        );
-        return;
-      }
-
-      if (result.createdSessionId) {
-        await validateCreatedAccount();
-        return;
-      }
-
-      setFormError(
-        "Nao foi possivel concluir o cadastro com esse provedor agora.",
-      );
-    } catch (error) {
-      setFormError(getClerkErrorMessage(error));
-    } finally {
-      setSocialLoading(null);
-    }
+    setAwaitingEmailVerification(false);
+    setVerificationCode("");
+    setFormNotice(null);
+    return true;
   };
+
+  // const handleSSO = async (provider: ProviderName) => {
+  //   if (socialButtonsDisabled) {
+  //     return;
+  //   }
+
+  //   if (!acceptTerms) {
+  //     setFormError("Aceite os termos para continuar com o cadastro.");
+  //     return;
+  //   }
+
+  //   setFormError(null);
+  //   setSocialLoading(provider);
+
+  //   try {
+  //     const strategy = provider === "google" ? "oauth_google" : "oauth_apple";
+  //     const result = await startSSOFlow({
+  //       strategy,
+  //       redirectUrl,
+  //     });
+
+  //     if (result.signIn && !result.signIn.isTransferable) {
+  //       await clerk.signOut();
+  //       setFormError(
+  //         `Ja existe uma conta com ${provider === "google" ? "Google" : "Apple"}. Entre pela tela de login.`,
+  //       );
+  //       return;
+  //     }
+
+  //     if (result.createdSessionId) {
+  //       await validateCreatedAccount();
+  //       return;
+  //     }
+
+  //     setFormError(
+  //       "Nao foi possivel concluir o cadastro com esse provedor agora.",
+  //     );
+  //   } catch (error) {
+  //     setFormError(getClerkErrorMessage(error));
+  //   } finally {
+  //     setSocialLoading(null);
+  //   }
+  // };
 
   const handleSignUp = async () => {
     if (formDisabled) {
@@ -197,12 +213,23 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
       return;
     }
 
+    const identityValidationMessage = validateSignUpIdentity({
+      fullName: normalizedFullName,
+      email: normalizedEmail,
+    });
+
+    if (identityValidationMessage) {
+      setFormError(identityValidationMessage);
+      return;
+    }
+
     if (!acceptTerms) {
       setFormError("Aceite os termos para criar sua conta.");
       return;
     }
 
     setFormError(null);
+    setFormNotice(null);
     setSubmitting(true);
 
     try {
@@ -219,8 +246,7 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
       }
 
       if (signUp.status === "complete" && signUp.createdSessionId) {
-        await signUp.finalize();
-        const accountIsValid = await validateCreatedAccount();
+        const accountIsValid = await finalizeCompletedSignUp();
         if (accountIsValid) {
           return;
         }
@@ -228,8 +254,83 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
         return;
       }
 
+      const sendCodeResult = await signUp.verifications.sendEmailCode();
+
+      if (sendCodeResult.error) {
+        setFormError(getClerkErrorMessage(sendCodeResult.error));
+        return;
+      }
+
+      setAwaitingEmailVerification(true);
+      setVerificationCode("");
+    } catch (error) {
+      setFormError(getClerkErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleVerifyEmailCode = async () => {
+    if (formDisabled) {
+      return;
+    }
+
+    const normalizedCode = verificationCode.trim();
+
+    if (!normalizedCode) {
+      setFormNotice(null);
+      setFormError("Digite o código enviado por e-mail para continuar.");
+      return;
+    }
+
+    setFormError(null);
+    setFormNotice(null);
+    setSubmitting(true);
+
+    try {
+      const result = await signUp.verifications.verifyEmailCode({
+        code: normalizedCode,
+      });
+
+      if (result.error) {
+        setFormError(getClerkErrorMessage(result.error));
+        return;
+      }
+
+      if (signUp.status === "complete" && signUp.createdSessionId) {
+        await finalizeCompletedSignUp();
+        return;
+      }
+
       setFormError(
-        "Conta criada, mas ainda falta concluir a verificacao configurada no Clerk.",
+        "O código foi aceito, mas o Clerk ainda não concluiu o cadastro. Tente novamente em instantes.",
+      );
+    } catch (error) {
+      setFormError(getClerkErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleResendEmailCode = async () => {
+    if (formDisabled || !awaitingEmailVerification) {
+      return;
+    }
+
+    setFormError(null);
+    setFormNotice(null);
+    setSubmitting(true);
+
+    try {
+      const result = await signUp.verifications.sendEmailCode();
+
+      if (result.error) {
+        setFormError(getClerkErrorMessage(result.error));
+        return;
+      }
+
+      setFormNotice(
+        "Enviamos um novo código de verificação para o seu e-mail.",
       );
     } catch (error) {
       setFormError(getClerkErrorMessage(error));
@@ -248,7 +349,7 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
         bottomOffset={insets.bottom}
         contentContainerStyle={styles.scrollContent}
       >
-        {onBack ? (
+        {onBack && !awaitingEmailVerification ? (
           <View
             style={[
               styles.backButtonContainer,
@@ -284,196 +385,162 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
           ]}
         >
           <View style={styles.header}>
-            <Text style={styles.title}>Crie sua conta</Text>
+            <Text style={styles.title}>
+              {awaitingEmailVerification
+                ? "Verifique seu e-mail"
+                : "Crie sua conta"}
+            </Text>
             <Text style={styles.subtitle}>
-              Informe nome, e-mail e senha para criar sua conta e começarar
-              preços.
+              {awaitingEmailVerification
+                ? "Digite o código enviado para o e-mail informado para concluir a criação da conta."
+                : "Informe nome, e-mail e senha para criar sua conta e começarar preços."}
             </Text>
           </View>
 
           <View style={styles.card}>
-            {/* <View style={styles.socialRow}>
-              {Platform.OS === "android" && (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={socialButtonsDisabled}
-                  onPress={() => {
-                    void handleSSO("google");
-                  }}
-                  style={({ pressed }) => [
-                    styles.socialButton,
-                    (pressed || socialLoading === "google") &&
-                      styles.buttonPressed,
-                    socialButtonsDisabled && styles.buttonDisabled,
-                  ]}
-                >
-                  <View style={styles.buttonInner}>
-                    {socialLoading === "google" ? (
-                      <ActivityIndicator size="small" color="#111111" />
-                    ) : (
-                      <Image
-                        contentFit="contain"
-                        source={require("../../../assets/images/google.png")}
-                        style={styles.socialIcon}
-                      />
-                    )}
-                    <Text style={styles.socialButtonText}>Google</Text>
-                  </View>
-                </Pressable>
-              )}
-
-              {Platform.OS === "ios" && (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={socialButtonsDisabled}
-                  onPress={() => {
-                    void handleSSO("apple");
-                  }}
-                  style={({ pressed }) => [
-                    styles.socialButton,
-                    (pressed || socialLoading === "apple") &&
-                      styles.buttonPressed,
-                    socialButtonsDisabled && styles.buttonDisabled,
-                  ]}
-                >
-                  <View style={styles.buttonInner}>
-                    {socialLoading === "apple" ? (
-                      <ActivityIndicator size="small" color="#111111" />
-                    ) : (
-                      <Image
-                        contentFit="contain"
-                        source={require("../../../assets/images/apple.png")}
-                        style={styles.socialIcon}
-                      />
-                    )}
-                    <Text style={styles.socialButtonText}>Apple</Text>
-                  </View>
-                </Pressable>
-              )}
-            </View>
-
-            <View style={styles.dividerRow}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>ou</Text>
-              <View style={styles.dividerLine} />
-            </View> */}
-
             <View style={styles.formSection}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Nome completo</Text>
-                <TextInput
-                  autoCapitalize="words"
-                  autoComplete="name"
-                  editable={!formDisabled}
-                  onChangeText={setFullName}
-                  placeholder="Seu nome completo"
-                  placeholderTextColor="#9A9A9A"
-                  style={styles.input}
-                  value={fullName}
-                />
-              </View>
+              {!awaitingEmailVerification ? (
+                <>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Nome completo</Text>
+                    <TextInput
+                      autoCapitalize="words"
+                      autoComplete="name"
+                      editable={!registrationFieldsDisabled}
+                      onChangeText={setFullName}
+                      placeholder="Seu nome completo"
+                      placeholderTextColor="#9A9A9A"
+                      style={styles.input}
+                      value={fullName}
+                    />
+                  </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>E-mail</Text>
-                <TextInput
-                  autoCapitalize="none"
-                  autoComplete="email"
-                  editable={!formDisabled}
-                  keyboardType="email-address"
-                  onChangeText={setEmail}
-                  placeholder="voce@exemplo.com"
-                  placeholderTextColor="#9A9A9A"
-                  style={styles.input}
-                  value={email}
-                />
-              </View>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>E-mail</Text>
+                    <TextInput
+                      autoCapitalize="none"
+                      autoComplete="email"
+                      editable={!registrationFieldsDisabled}
+                      keyboardType="email-address"
+                      onChangeText={setEmail}
+                      placeholder="voce@exemplo.com"
+                      placeholderTextColor="#9A9A9A"
+                      style={styles.input}
+                      value={email}
+                    />
+                  </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Senha</Text>
-                <View style={styles.passwordField}>
-                  <TextInput
-                    autoCapitalize="none"
-                    autoComplete="new-password"
-                    editable={!formDisabled}
-                    onChangeText={setPassword}
-                    placeholder="Crie uma senha"
-                    placeholderTextColor="#9A9A9A"
-                    secureTextEntry={!showPassword}
-                    style={styles.passwordInput}
-                    value={password}
-                  />
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={formDisabled}
-                    onPress={() => {
-                      setShowPassword((currentValue) => !currentValue);
-                    }}
-                    style={({ pressed }) => [
-                      styles.passwordToggle,
-                      pressed && styles.buttonPressed,
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Senha</Text>
+                    <View style={styles.passwordField}>
+                      <TextInput
+                        autoCapitalize="none"
+                        autoComplete="new-password"
+                        editable={!registrationFieldsDisabled}
+                        onChangeText={setPassword}
+                        placeholder="Crie uma senha"
+                        placeholderTextColor="#9A9A9A"
+                        secureTextEntry={!showPassword}
+                        style={styles.passwordInput}
+                        value={password}
+                      />
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={registrationFieldsDisabled}
+                        onPress={() => {
+                          setShowPassword((currentValue) => !currentValue);
+                        }}
+                        style={({ pressed }) => [
+                          styles.passwordToggle,
+                          pressed && styles.buttonPressed,
+                        ]}
+                      >
+                        <Text style={styles.passwordToggleText}>
+                          {showPassword ? "Ocultar" : "Mostrar"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.termsRow,
+                      registrationFieldsDisabled && styles.buttonDisabled,
                     ]}
                   >
-                    <Text style={styles.passwordToggleText}>
-                      {showPassword ? "Ocultar" : "Mostrar"}
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-
-              <View
-                style={[styles.termsRow, formDisabled && styles.buttonDisabled]}
-              >
-                <Pressable
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: acceptTerms }}
-                  disabled={formDisabled}
-                  onPress={() => {
-                    setAcceptTerms((currentValue) => !currentValue);
-                  }}
-                  style={({ pressed }) => [
-                    styles.checkbox,
-                    acceptTerms && styles.checkboxChecked,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  {acceptTerms ? <View style={styles.checkboxDot} /> : null}
-                </Pressable>
-                <View style={styles.termsTextContainer}>
-                  <Text style={styles.termsText}>
-                    Eu concordo com os{" "}
-                    <Text
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: acceptTerms }}
+                      disabled={registrationFieldsDisabled}
                       onPress={() => {
-                        setVisibleLegalDocument("terms_of_use");
+                        setAcceptTerms((currentValue) => !currentValue);
                       }}
-                      style={styles.termsLink}
+                      style={({ pressed }) => [
+                        styles.checkbox,
+                        acceptTerms && styles.checkboxChecked,
+                        pressed && styles.buttonPressed,
+                      ]}
                     >
-                      Termos
-                    </Text>{" "}
-                    e com a{" "}
-                    <Text
-                      onPress={() => {
-                        setVisibleLegalDocument("privacy_policy");
-                      }}
-                      style={styles.termsLink}
-                    >
-                      Politica de Privacidade
-                    </Text>
-                    .
-                  </Text>
-                  {legalLoading ? (
-                    <Text style={styles.termsHint}>
-                      Carregando documentos...
-                    </Text>
-                  ) : null}
-                  {legalError ? (
-                    <Text style={styles.termsError}>
-                      Nao foi possivel carregar os documentos agora.
-                    </Text>
-                  ) : null}
+                      {acceptTerms ? <View style={styles.checkboxDot} /> : null}
+                    </Pressable>
+                    <View style={styles.termsTextContainer}>
+                      <Text style={styles.termsText}>
+                        Eu concordo com os{" "}
+                        <Text
+                          onPress={() => {
+                            setVisibleLegalDocument("terms_of_use");
+                          }}
+                          style={styles.termsLink}
+                        >
+                          Termos
+                        </Text>{" "}
+                        e com a{" "}
+                        <Text
+                          onPress={() => {
+                            setVisibleLegalDocument("privacy_policy");
+                          }}
+                          style={styles.termsLink}
+                        >
+                          Politica de Privacidade
+                        </Text>
+                        .
+                      </Text>
+                      {legalLoading ? (
+                        <Text style={styles.termsHint}>
+                          Carregando documentos...
+                        </Text>
+                      ) : null}
+                      {legalError ? (
+                        <Text style={styles.termsError}>
+                          Nao foi possivel carregar os documentos agora.
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.verificationSection}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Código de verificação</Text>
+                    <TextInput
+                      autoCapitalize="none"
+                      autoComplete="one-time-code"
+                      editable={!formDisabled}
+                      keyboardType="number-pad"
+                      onChangeText={setVerificationCode}
+                      placeholder="Digite o código"
+                      placeholderTextColor="#9A9A9A"
+                      style={styles.input}
+                      value={verificationCode}
+                    />
+                  </View>
                 </View>
-              </View>
+              )}
             </View>
 
+            {formNotice ? (
+              <Text style={styles.formNotice}>{formNotice}</Text>
+            ) : null}
             {formError ? (
               <Text style={styles.formError}>{formError}</Text>
             ) : null}
@@ -482,7 +549,9 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
               accessibilityRole="button"
               disabled={formDisabled}
               onPress={() => {
-                void handleSignUp();
+                void (awaitingEmailVerification
+                  ? handleVerifyEmailCode()
+                  : handleSignUp());
               }}
               style={({ pressed }) => [
                 styles.primaryButton,
@@ -494,26 +563,49 @@ export function SignUpScreen({ onBack }: SignUpScreenProps) {
                 {formBusy ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : null}
-                <Text style={styles.primaryButtonText}>Criar conta</Text>
+                <Text style={styles.primaryButtonText}>
+                  {awaitingEmailVerification
+                    ? "Confirmar código"
+                    : "Criar conta"}
+                </Text>
               </View>
             </Pressable>
+
+            {awaitingEmailVerification ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={formDisabled}
+                onPress={() => {
+                  void handleResendEmailCode();
+                }}
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  (pressed || formBusy) && styles.buttonPressed,
+                  formDisabled && styles.buttonDisabled,
+                ]}
+              >
+                <Text style={styles.secondaryButtonText}>Reenviar código</Text>
+              </Pressable>
+            ) : null}
           </View>
 
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Ja tem uma conta?</Text>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!onBack}
-              onPress={onBack}
-              style={({ pressed }) => [
-                styles.footerButton,
-                pressed && styles.buttonPressed,
-                !onBack && styles.buttonDisabled,
-              ]}
-            >
-              <Text style={styles.footerButtonText}>Entrar</Text>
-            </Pressable>
-          </View>
+          {!awaitingEmailVerification && (
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Ja tem uma conta?</Text>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!onBack}
+                onPress={onBack}
+                style={({ pressed }) => [
+                  styles.footerButton,
+                  pressed && styles.buttonPressed,
+                  !onBack && styles.buttonDisabled,
+                ]}
+              >
+                <Text style={styles.footerButtonText}>Entrar</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       </KeyboardAwareScrollView>
 
@@ -829,12 +921,41 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: "600",
   },
+  formNotice: {
+    color: "#1D4ED8",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
+  verificationSection: {
+    gap: 8,
+    paddingTop: 8,
+  },
+  verificationTitle: {
+    color: "#171717",
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  verificationDescription: {
+    color: "#6C6C6C",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "500",
+  },
   primaryButton: {
     minHeight: 54,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#0D0D0D",
+  },
+  secondaryButton: {
+    minHeight: 46,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
   },
   buttonInner: {
     flexDirection: "row",
@@ -845,6 +966,12 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: "#FFFFFF",
     fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  secondaryButtonText: {
+    color: "#171717",
+    fontSize: 13,
     lineHeight: 18,
     fontWeight: "700",
   },

@@ -72,6 +72,14 @@ const CLERK_ERROR_MESSAGE_SUBSTRINGS: [string, string][] = [
     "Password is incorrect. Try again, or use another method.",
     "Senha incorreta. Tente novamente ou use outro método.",
   ],
+  [
+    "Passwords must be 15 characters or more.",
+    "Senha deve ter pelo menos 15 caracteres.",
+  ],
+  [
+    "This account requires a password reset before sign-in can continue.",
+    "Esta conta entrou em um estado de seguranca do Clerk e precisa redefinir a senha antes de continuar. Isso costuma acontecer quando uma conta criada por e-mail/senha e depois vinculada a um login social ainda nao tinha o e-mail verificado.",
+  ],
   ["Session already exists", "Já existe uma sessão ativa para esta conta."],
 ];
 

@@ -49,10 +49,12 @@ export async function acceptCurrentLegalDocumentsIfNeeded(
 
   await waitForAuthenticatedBackendSession(authHeaders);
 
-  const { data: documents } =
-    await apiClient.get<LegalDocumentsResponse>("/legal/documents", {
+  const { data: documents } = await apiClient.get<LegalDocumentsResponse>(
+    "/legal/documents",
+    {
       headers: authHeaders,
-    });
+    },
+  );
 
   const { data: currentConsent } =
     await apiClient.get<LegalConsentResponse | null>("/legal/consents/me", {
@@ -70,14 +72,18 @@ export async function acceptCurrentLegalDocumentsIfNeeded(
     return;
   }
 
-  await apiClient.post("/legal/consents", {
-    terms_of_use_document_id: documents.terms_of_use.id,
-    privacy_policy_document_id: documents.privacy_policy.id,
-    accepted_terms_of_use: true,
-    accepted_privacy_policy: true,
-  }, {
-    headers: authHeaders,
-  });
+  await apiClient.post(
+    "/legal/consents",
+    {
+      terms_of_use_document_id: documents.terms_of_use.id,
+      privacy_policy_document_id: documents.privacy_policy.id,
+      accepted_terms_of_use: true,
+      accepted_privacy_policy: true,
+    },
+    {
+      headers: authHeaders,
+    },
+  );
 }
 
 async function waitForAuthenticatedBackendSession(

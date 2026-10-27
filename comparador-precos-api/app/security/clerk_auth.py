@@ -10,6 +10,7 @@ from fastapi import Request
 from app.modules.users.service import AuthenticatedUser
 from app.modules.users.service import DuplicateUserEmailError
 from app.modules.users.service import upsert_user_from_clerk_session
+from app.modules.users.validation import InvalidUserProfileError
 
 
 def _get_optional_env(name: str) -> str | None:
@@ -142,6 +143,21 @@ def require_authenticated_user(request: Request) -> AuthenticatedUser:
             status_code=409,
             detail="Ja existe uma conta cadastrada com este e-mail. Entre pela tela de login.",
         ) from error
+    except InvalidUserProfileError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        print(
+            (
+                "Falha ao sincronizar usuario autenticado com o banco local: "
+                f"clerk_user_id={clerk_user_id} "
+                f"error={type(error).__name__}: {error}"
+            ),
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Nao foi possivel sincronizar o usuario autenticado com o backend.",
+        ) from error
 
 
 def _get_optional_claim(claims: dict[str, object], key: str) -> str | None:
@@ -161,7 +177,11 @@ def _get_clerk_profile(clerk_user_id: str):
         return client.users.get(user_id=clerk_user_id)
     except Exception as error:
         print(
-            f"Nao foi possivel buscar perfil completo do Clerk para {clerk_user_id}: {error}",
+            (
+                "Nao foi possivel buscar perfil completo do Clerk para "
+                f"{clerk_user_id}: {error}. "
+                "Confira se CLERK_SECRET_KEY aponta para a mesma instancia do Clerk usada pelo app."
+            ),
             flush=True,
         )
         return None

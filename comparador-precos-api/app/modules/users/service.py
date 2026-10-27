@@ -6,6 +6,9 @@ from sqlalchemy import select
 
 from app.db.models import AppUser
 from app.db.session import get_session_factory
+from app.modules.users.validation import normalize_email
+from app.modules.users.validation import normalize_name
+from app.modules.users.validation import validate_user_profile
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,15 @@ def upsert_user_from_clerk_session(
     claims: dict[str, object] | None,
 ) -> AuthenticatedUser:
     session_factory = get_session_factory()
-    normalized_email = email.strip().lower() if isinstance(email, str) and email.strip() else None
+    normalized_email = normalize_email(email)
+    normalized_first_name = normalize_name(first_name)
+    normalized_last_name = normalize_name(last_name)
+
+    validate_user_profile(
+        email=normalized_email,
+        first_name=normalized_first_name,
+        last_name=normalized_last_name,
+    )
 
     with session_factory() as session:
         user = session.scalar(
@@ -53,8 +64,8 @@ def upsert_user_from_clerk_session(
             session.add(user)
 
         user.primary_email = normalized_email
-        user.first_name = first_name
-        user.last_name = last_name
+        user.first_name = normalized_first_name
+        user.last_name = normalized_last_name
         user.image_url = image_url
         user.last_sign_in_session_id = session_id
         user.claims = claims
